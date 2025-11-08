@@ -1,8 +1,9 @@
 "use client";
 
 import { SearchIcon, SparklesIcon } from './icons';
+import type { DataMode } from "@/lib/answer-store";
 
-export type DataMode = 'web-search' | 'example-data';
+export type { DataMode } from "@/lib/answer-store";
 
 interface DataModeToggleProps {
   dataMode: DataMode | undefined;

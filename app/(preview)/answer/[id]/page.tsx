@@ -4,39 +4,130 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Message } from "@/components/message";
 import { renderWidgetResponse } from "@/lib/widget-renderer";
-import { WidgetResponse } from "@/lib/widget-schema";
+import type { StoredAnswerRecord } from "@/lib/answer-store";
 import { motion } from "framer-motion";
 import Link from "next/link";
-
-interface AnswerData {
-  query: string;
-  response: WidgetResponse;
-  plan?: any;
-  dataMode?: 'web-search' | 'example-data';
-}
 
 export default function AnswerPage() {
   const params = useParams();
   const router = useRouter();
   const answerId = params.id as string;
-  const [answerData, setAnswerData] = useState<AnswerData | null>(null);
+  const [answerData, setAnswerData] = useState<StoredAnswerRecord | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (!answerId) return;
+    if (typeof window === "undefined") return;
 
-    try {
-      const stored = sessionStorage.getItem(answerId);
-      if (stored) {
-        const data = JSON.parse(stored) as AnswerData;
-        setAnswerData(data);
-      } else {
-        setNotFound(true);
+    let cancelled = false;
+    let hasSessionRecord = false;
+
+    const loadFromSessionStorage = () => {
+      try {
+        const cached = sessionStorage.getItem(answerId);
+        if (!cached) return;
+
+        const parsed = JSON.parse(cached) as Partial<StoredAnswerRecord>;
+
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.query === "string" &&
+          parsed.response &&
+          typeof parsed.response === "object"
+        ) {
+          const normalized: StoredAnswerRecord = {
+            id: typeof parsed.id === "string" ? parsed.id : answerId,
+            query: parsed.query,
+            response: parsed.response as StoredAnswerRecord["response"],
+            plan:
+              parsed.plan !== undefined && parsed.plan !== null
+                ? (parsed.plan as StoredAnswerRecord["plan"])
+                : null,
+            ...(parsed.dataMode === "web-search" || parsed.dataMode === "example-data"
+              ? { dataMode: parsed.dataMode }
+              : {}),
+            createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : Date.now(),
+          };
+
+          hasSessionRecord = true;
+
+          if (!cancelled) {
+            setAnswerData(normalized);
+            setNotFound(false);
+            setIsLoading(false);
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to read cached answer from sessionStorage:", error);
       }
-    } catch (e) {
-      console.error('Failed to retrieve answer data:', e);
-      setNotFound(true);
+    };
+
+    loadFromSessionStorage();
+
+    async function fetchAnswer() {
+      if (!hasSessionRecord && !cancelled) {
+        setIsLoading(true);
+        setNotFound(false);
+      }
+
+      try {
+        const response = await fetch(`/api/answers/${answerId}`, {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            if (!cancelled) {
+              if (!hasSessionRecord) {
+                setNotFound(true);
+                setAnswerData(null);
+              } else {
+                setNotFound(false);
+              }
+            }
+            try {
+              sessionStorage.removeItem(answerId);
+            } catch (storageError) {
+              console.warn("Failed to remove cached answer from sessionStorage:", storageError);
+            }
+            return;
+          }
+          throw new Error(`Failed to load answer (${response.status})`);
+        }
+
+        const data = (await response.json()) as { answer: StoredAnswerRecord };
+
+        if (!cancelled) {
+          setAnswerData(data.answer);
+          setNotFound(false);
+          setIsLoading(false);
+        }
+
+        try {
+          sessionStorage.setItem(answerId, JSON.stringify(data.answer));
+        } catch (storageError) {
+          console.warn("Failed to cache answer in sessionStorage:", storageError);
+        }
+      } catch (error) {
+        console.error("Failed to retrieve answer data:", error);
+        if (!cancelled && !hasSessionRecord) {
+          setNotFound(true);
+          setAnswerData(null);
+        }
+      } finally {
+        if (!cancelled && !hasSessionRecord) {
+          setIsLoading(false);
+        }
+      }
     }
+
+    fetchAnswer();
+
+    return () => {
+      cancelled = true;
+    };
   }, [answerId]);
 
   if (notFound) {
@@ -51,7 +142,7 @@ export default function AnswerPage() {
             Answer not found
           </h1>
           <p className="text-muted-foreground mb-6">
-            This answer link may have expired or the session data is no longer available.
+            This answer link may have expired or the data is no longer available.
           </p>
           <Link
             href="/"
@@ -64,7 +155,7 @@ export default function AnswerPage() {
     );
   }
 
-  if (!answerData) {
+  if (isLoading || !answerData) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-background">
         <div className="text-muted-foreground">Loading...</div>

@@ -2,15 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryAgentStream } from "@/lib/agent-wrapper";
 import type { WidgetResponse, PlanResult } from "@/lib/widget-schema";
 import { generateAnswerId } from "@/lib/answer-utils";
-
-type DataMode = "web-search" | "example-data";
-
-interface AnswerPayload {
-  query: string;
-  response: WidgetResponse;
-  plan: PlanResult | null;
-  dataMode?: DataMode;
-}
+import { saveAnswer, type StoredAnswerPayload, type DataMode } from "@/lib/answer-store";
 
 export async function POST(request: NextRequest) {
   try {
@@ -54,19 +46,22 @@ export async function POST(request: NextRequest) {
     const baseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
     const answerUrl = `${baseUrl}/answer/${answerId}`;
 
-    const answerPayload: AnswerPayload = {
+    const answerPayload: StoredAnswerPayload = {
       query: message,
       response: finalResponse,
       plan: capturedPlan,
       ...(dataMode ? { dataMode } : {}),
     };
 
+    const answerRecord = saveAnswer(answerId, answerPayload);
+
     return NextResponse.json(
       {
         answerId,
         answerUrl,
         answerPayload,
-        note: "No server-side persistence; client must store answerPayload if needed.",
+        answer: answerRecord,
+        note: "Answer stored temporarily on the server for easy retrieval.",
       },
       { status: 200 }
     );

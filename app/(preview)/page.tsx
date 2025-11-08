@@ -9,12 +9,13 @@ import Link from "next/link";
 import { ModelSelector } from "@/components/model-selector";
 import { DataModeToggle, type DataMode } from "@/components/data-mode-toggle";
 import { renderWidgetResponse } from "@/lib/widget-renderer";
-import { WidgetResponse } from "@/lib/widget-schema";
+import type { PlanResult, WidgetResponse } from "@/lib/widget-schema";
 import { LoadingState } from "@/lib/loading-states";
 import { LoadingIndicator } from "@/components/loading-indicator";
 import { ProgressiveSkeleton } from "@/components/progressive-skeleton";
 import { generateAnswerId } from "@/lib/answer-utils";
 import { sendMessage } from "./actions";
+import type { StoredAnswerRecord } from "@/lib/answer-store";
 
 interface MessageItem {
   id: string;
@@ -150,7 +151,7 @@ export default function Home() {
 
       // Read the stream
       let finalResponse: WidgetResponse | null = null;
-      let capturedPlan: any = null;
+      let capturedPlan: PlanResult | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -170,7 +171,7 @@ export default function Home() {
               } else if (data.type === "plan" && data.plan) {
                 // Receive plan information for progressive skeleton
                 setPlanInfo(data.plan);
-                capturedPlan = data.plan; // Capture for message storage
+                capturedPlan = data.plan as PlanResult; // Capture for message storage
               } else if (data.type === "data" && data.dataResult) {
                 // Receive data information for progressive skeleton
                 setDataInfo(data.dataResult);
@@ -190,20 +191,58 @@ export default function Home() {
 
       // Add final response to messages with plan and query for live updates
       if (finalResponse) {
-        const answerId = generateAnswerId();
-        
-        // Persist to sessionStorage for shareable links
+        let answerIdFromServer: string | null = null;
+        let storedAnswerRecord: StoredAnswerRecord | null = null;
+
         try {
-          sessionStorage.setItem(answerId, JSON.stringify({
+          const storeResponse = await fetch("/api/answers/store", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              payload: {
+                query: userMessage,
+                response: finalResponse,
+                plan: capturedPlan,
+                dataMode,
+              },
+            }),
+          });
+
+          if (storeResponse.ok) {
+            const storeData = await storeResponse.json();
+            if (storeData && typeof storeData.answerId === "string") {
+              answerIdFromServer = storeData.answerId;
+            }
+            if (storeData && storeData.answer && typeof storeData.answer === "object") {
+              storedAnswerRecord = storeData.answer as StoredAnswerRecord;
+            }
+          } else {
+            console.warn("Failed to persist answer on server:", await storeResponse.text());
+          }
+        } catch (error) {
+          console.warn("Error calling /api/answers/store:", error);
+        }
+
+        const answerRecord: StoredAnswerRecord =
+          storedAnswerRecord ??
+          ({
+            id: answerIdFromServer ?? generateAnswerId(),
             query: userMessage,
             response: finalResponse,
-            plan: capturedPlan,
-            dataMode: dataMode
-          }));
+            plan: capturedPlan ?? null,
+            ...(dataMode ? { dataMode } : {}),
+            createdAt: Date.now(),
+          } as StoredAnswerRecord);
+
+        // Persist to sessionStorage for shareable links (fallback / offline)
+        try {
+          sessionStorage.setItem(answerRecord.id, JSON.stringify(answerRecord));
         } catch (e) {
           console.warn('Failed to persist answer to sessionStorage:', e);
         }
-        
+
         setMessages((messages) => [
           ...messages,
           { 
@@ -211,10 +250,10 @@ export default function Home() {
             role: "assistant", 
             content: "", 
             response: finalResponse,
-            plan: capturedPlan,
-            query: userMessage,
-            dataMode: dataMode,
-            answerId: answerId
+            plan: answerRecord.plan,
+            query: answerRecord.query,
+            dataMode: answerRecord.dataMode ?? dataMode,
+            answerId: answerRecord.id
           },
         ]);
       } else {
