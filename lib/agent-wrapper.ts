@@ -65,7 +65,7 @@ async function attemptWithFallbacks(
   model?: string,
   dataMode?: 'web-search' | 'example-data'
 ): Promise<void> {
-  const modelToUse = model || process.env.CURSOR_MODEL || 'cheetah';
+  const modelToUse = model || process.env.CURSOR_MODEL || 'composer-1';
   
   // Strategy 1: Try with original settings
   try {

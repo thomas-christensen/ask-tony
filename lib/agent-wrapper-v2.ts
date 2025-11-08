@@ -28,7 +28,7 @@ export async function queryAgentStream(
   model?: string
 ): Promise<void> {
   try {
-    const modelToUse = model || process.env.CURSOR_MODEL || 'cheetah';
+    const modelToUse = model || process.env.CURSOR_MODEL || 'composer-1';
     
     // PHASE 1: Planning
     onUpdate({ 

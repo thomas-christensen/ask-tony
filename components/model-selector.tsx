@@ -4,21 +4,21 @@ import { useRef, useEffect, useState } from 'react';
 
 const ALL_MODELS = [
   { value: 'auto', label: 'auto', cost: 'free' },
-  { value: 'cheetah', label: 'cheetah', cost: 'low' },
+  { value: 'composer-1', label: 'composer-1', cost: 'low' },
   { value: 'gpt-5', label: 'gpt-5', cost: 'high' },
   { value: 'sonnet-4.5', label: 'sonnet-4.5', cost: 'high' },
   { value: 'grok', label: 'grok', cost: 'medium' },
 ];
 
-// Get allowed models from environment variable (defaults to auto and cheetah only)
+// Get allowed models from environment variable (defaults to auto and composer-1 only)
 const getAllowedModels = () => {
   const allowedModelsEnv = process.env.NEXT_PUBLIC_ALLOWED_MODELS;
   if (allowedModelsEnv) {
     const allowedValues = allowedModelsEnv.split(',').map(m => m.trim());
     return ALL_MODELS.filter(m => allowedValues.includes(m.value));
   }
-  // Default: only allow auto and cheetah (cost-effective models)
-  return ALL_MODELS.filter(m => ['auto', 'cheetah'].includes(m.value));
+  // Default: only allow auto and composer-1 (cost-effective models)
+  return ALL_MODELS.filter(m => ['auto', 'composer-1'].includes(m.value));
 };
 
 const MODELS = getAllowedModels();

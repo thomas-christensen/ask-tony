@@ -21,7 +21,7 @@ Open http://localhost:3000
 ## Model Selection
 
 Switch models by adding `?model=MODEL_NAME` to the URL:
-- `?model=cheetah` - Fast, default
+- `?model=composer-1` - Fast, default
 - `?model=auto` - Intelligent routing
 - `?model=gpt-5` - GPT-5
 - `?model=sonnet-4.5` - Claude Sonnet 4.5

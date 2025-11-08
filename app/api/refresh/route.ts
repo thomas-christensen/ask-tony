@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
     }
 
     const typedPlan = plan as PlanResult;
-    const model = process.env.CURSOR_MODEL || 'cheetah';
+    const model = process.env.CURSOR_MODEL || 'composer-1';
 
     // Determine data mode - respect user setting or use plan's decision
     let shouldUseWebSearch = typedPlan.needsWebSearch;

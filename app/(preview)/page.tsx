@@ -31,7 +31,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingState, setLoadingState] = useState<LoadingState | null>(null);
   const [isFocused, setIsFocused] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>('cheetah');
+  const [selectedModel, setSelectedModel] = useState<string>('composer-1');
   const [dataMode, setDataMode] = useState<DataMode>('web-search');
   
   // Progressive skeleton states
