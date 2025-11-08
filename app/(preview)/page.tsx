@@ -399,7 +399,7 @@ export default function Home() {
             <input
               ref={inputRef}
               className="bg-transparent px-3 pt-3 pb-2 w-full outline-none text-foreground placeholder-muted-foreground disabled:opacity-50"
-              placeholder="Ask, search, build anything"
+              placeholder="Ask anything"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onFocus={() => setIsFocused(true)}

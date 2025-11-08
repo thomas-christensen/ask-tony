@@ -50,6 +50,7 @@ Grant the bot the following OAuth scopes:
 
 - `app_mentions:read`
 - `chat:write`
+- `reactions:write` (required for emoji reactions)
 - `channels:history` (and `groups:history` if you want private channel support)
 
 ### Slack App configuration

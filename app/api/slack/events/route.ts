@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { KnownBlock, MrkdwnElement } from "@slack/web-api";
 import { getSlackClient, getSlackSigningSecret } from "@/lib/slack";
 import { queryAgentStream } from "@/lib/agent-wrapper";
 import { generateAnswerId } from "@/lib/answer-utils";
-import { saveAnswer, type StoredAnswerPayload } from "@/lib/answer-store";
+import {
+  saveAnswer,
+  type StoredAnswerPayload,
+} from "@/lib/answer-store";
+import { buildAnswerPresentation, type AnswerPresentation } from "@/lib/answer-presentation";
 import type { PlanResult, WidgetResponse } from "@/lib/widget-schema";
 
 interface SlackAuthorization {
@@ -52,6 +57,126 @@ function stripBotMention(text: string, botUserId?: string): string {
   }
 
   return sanitized.replace(/<@[A-Z0-9]+>/g, "").trim();
+}
+
+function truncate(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function sanitizePlainText(text: string): string {
+  return text.replace(/[\r\n]+/g, " ").replace(/[<>]/g, "").trim();
+}
+
+function escapeSlackMarkdown(text: string): string {
+  return escapeSlackText(text).replace(/\*/g, "\\*").replace(/_/g, "\\_").replace(/~/g, "\\~");
+}
+
+function formatHighlights(highlights: string[], metricLine?: string): string | null {
+  if (highlights.length === 0) return null;
+
+  const uniqueHighlights: string[] = [];
+  const seen = new Set<string>();
+  const normalizedMetric = metricLine?.toLowerCase();
+
+  for (const highlight of highlights) {
+    const normalized = highlight.toLowerCase();
+    if (normalizedMetric && normalized === normalizedMetric) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    uniqueHighlights.push(highlight);
+    if (uniqueHighlights.length === 3) break;
+  }
+
+  if (uniqueHighlights.length === 0) return null;
+
+  const formatted = uniqueHighlights
+    .map((highlight) => `- ${escapeSlackMarkdown(truncate(highlight, 150))}`)
+    .join("\n");
+  return formatted.length > 0 ? formatted : null;
+}
+
+function createSlackBlocks({
+  presentation,
+  answerUrl,
+}: {
+  presentation: AnswerPresentation;
+  answerUrl: string;
+}): KnownBlock[] {
+  const blocks: KnownBlock[] = [];
+
+  blocks.push({
+    type: "header",
+    text: {
+      type: "plain_text",
+      text: truncate(escapeSlackText(presentation.title), 150),
+      emoji: true,
+    },
+  });
+
+  const metricLabel = presentation.metricLabel
+    ? escapeSlackMarkdown(truncate(presentation.metricLabel, 80))
+    : null;
+  const metricValue = presentation.metricValue
+    ? escapeSlackMarkdown(truncate(presentation.metricValue, 120))
+    : null;
+  const metricSubtitle = presentation.metricSubtitle
+    ? escapeSlackMarkdown(truncate(presentation.metricSubtitle, 120))
+    : null;
+
+  if (metricLabel && metricValue) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${metricLabel}*\n*${metricValue}*${metricSubtitle ? `\n_${metricSubtitle}_` : ""}`,
+      },
+    });
+  }
+
+  const description = presentation.description?.trim();
+  if (description) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: escapeSlackMarkdown(truncate(description, 3000)),
+      },
+    });
+  }
+
+  const metricLine = metricLabel && metricValue ? `${metricLabel}: ${metricValue}` : undefined;
+  const highlights = formatHighlights(presentation.highlights, metricLine);
+  if (highlights) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Highlights*\n${highlights}`,
+      },
+    });
+  }
+
+  blocks.push({
+    type: "actions",
+    elements: [
+      {
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "View more",
+          emoji: true,
+        },
+        url: answerUrl,
+      },
+    ],
+  });
+
+  return blocks;
 }
 
 function verifySlackSignature(request: NextRequest, rawBody: string): boolean {
@@ -116,6 +241,9 @@ async function handleAppMention(
   }
 
   let reactionAdded = false;
+  let placeholderTs: string | undefined;
+  
+  // Try to add a reaction first
   try {
     await slackClient.reactions.add({
       channel: event.channel,
@@ -124,7 +252,19 @@ async function handleAppMention(
     });
     reactionAdded = true;
   } catch (error) {
-    console.error("Failed to add reaction to Slack message:", error);
+    console.error("Failed to add reaction to Slack message (missing reactions:write scope?):", error);
+    
+    // Fall back to posting a message if reaction fails
+    try {
+      const placeholder = await slackClient.chat.postMessage({
+        channel: event.channel,
+        thread_ts: threadTs,
+        text: "Working on it...",
+      });
+      placeholderTs = placeholder.ts;
+    } catch (msgError) {
+      console.error("Failed to post placeholder message:", msgError);
+    }
   }
 
   try {
@@ -150,17 +290,42 @@ async function handleAppMention(
     };
 
     const answerId = generateAnswerId();
-    saveAnswer(answerId, answerPayload);
+    const storedAnswer = saveAnswer(answerId, answerPayload);
     const answerUrl = `${baseUrl}/answer/${answerId}`;
-
-    const message = `Here's what I found for *${sanitizedText}*:\n${answerUrl}`;
-
-    await slackClient.chat.postMessage({
-      channel: event.channel,
-      thread_ts: threadTs,
-      text: message,
+    
+    console.log("Building presentation for answer:", answerId);
+    const presentation = buildAnswerPresentation(storedAnswer);
+    console.log("Presentation built:", { title: presentation.title, description: presentation.description });
+    
+    const blocks = createSlackBlocks({
+      presentation,
+      answerUrl,
     });
+    const fallbackTitle = truncate(sanitizePlainText(presentation.title), 120);
+    const fallbackText = `${fallbackTitle} • ${answerUrl}`;
 
+    const messagePayload = {
+      channel: event.channel,
+      text: fallbackText,
+      blocks,
+    } as const;
+
+    // Update placeholder message or post new message
+    if (placeholderTs) {
+      await slackClient.chat.update({
+        ...messagePayload,
+        ts: placeholderTs,
+      });
+    } else {
+      await slackClient.chat.postMessage({
+        ...messagePayload,
+        thread_ts: threadTs,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+    }
+
+    // Remove reaction if it was added
     if (reactionAdded) {
       try {
         await slackClient.reactions.remove({
@@ -174,15 +339,27 @@ async function handleAppMention(
     }
   } catch (error) {
     console.error("Failed to process Slack mention:", error);
+    console.error("Error details:", error instanceof Error ? error.message : String(error));
+    console.error("Error stack:", error instanceof Error ? error.stack : "No stack trace");
 
     const errorMessage = "Sorry, I couldn't generate an answer. Please try again.";
 
-    await slackClient.chat.postMessage({
-      channel: event.channel,
-      thread_ts: threadTs,
-      text: errorMessage,
-    });
+    // Update placeholder or post error message
+    if (placeholderTs) {
+      await slackClient.chat.update({
+        channel: event.channel,
+        ts: placeholderTs,
+        text: errorMessage,
+      });
+    } else {
+      await slackClient.chat.postMessage({
+        channel: event.channel,
+        thread_ts: threadTs,
+        text: errorMessage,
+      });
+    }
 
+    // Remove reaction if it was added
     if (reactionAdded) {
       try {
         await slackClient.reactions.remove({
