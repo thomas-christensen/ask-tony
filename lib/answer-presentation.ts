@@ -245,14 +245,20 @@ function extractHighlights(widget: Widget | undefined): string[] {
   return [];
 }
 
-function extractPrimaryMetric(widget: Widget | undefined): { label: string; value: string } | null {
+function extractPrimaryMetric(
+  widget: Widget | undefined
+): { label: string; value: string; subtitle?: string } | null {
   if (!widget) return null;
 
   if (widget.type === "metric-card") {
     const label = safeString(widget.data?.label);
     const value = formatValue(widget.data?.value, widget.data?.unit);
+    const subtitle =
+      safeString(widget.data?.subtitle) ??
+      safeString(widget.data?.description) ??
+      safeString(widget.data?.trend);
     if (label && value) {
-      return { label, value };
+      return { label, value, subtitle: subtitle ?? undefined };
     }
   }
 
@@ -260,8 +266,12 @@ function extractPrimaryMetric(widget: Widget | undefined): { label: string; valu
     const primary = widget.data.metrics[0];
     const label = safeString(primary?.label);
     const value = formatValue(primary?.value, primary?.unit);
+    const subtitle =
+      safeString(primary?.subtitle) ??
+      safeString(primary?.description) ??
+      safeString(primary?.trend);
     if (label && value) {
-      return { label, value };
+      return { label, value, subtitle: subtitle ?? undefined };
     }
   }
 

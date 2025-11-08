@@ -1,10 +1,11 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import type { Metadata } from "next";
+"use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { CubeIcon } from "@/components/icons";
 import { Message } from "@/components/message";
 import { AnswerSessionCache } from "@/components/answer-session-cache";
-import { buildAnswerPresentation } from "@/lib/answer-presentation";
 import { getAnswer } from "@/lib/answer-store";
 import { renderWidgetResponse } from "@/lib/widget-renderer";
 
@@ -14,64 +15,69 @@ type AnswerPageParams = {
   };
 };
 
-export async function generateMetadata({ params }: AnswerPageParams): Promise<Metadata> {
+export default function AnswerPage({ params }: AnswerPageParams) {
+  const router = useRouter();
+  const [isNavigating, setIsNavigating] = useState(false);
   const answer = getAnswer(params.id);
 
   if (!answer) {
-    return {
-      title: "Answer not found",
-      description: "This answer link may have expired or the data is no longer available.",
-      robots: {
-        index: false,
-      },
-    };
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <p className="text-muted-foreground">Answer not found</p>
+      </div>
+    );
   }
 
-  const presentation = buildAnswerPresentation(answer);
-  const url = `/answer/${answer.id}`;
-  const imageUrl = `${url}/opengraph-image`;
-
-  return {
-    title: `${presentation.title} | Generative UI`,
-    description: presentation.description,
-    alternates: {
-      canonical: url,
-    },
-    openGraph: {
-      title: presentation.title,
-      description: presentation.description,
-      url,
-      type: "article",
-      images: [imageUrl],
-    },
-    twitter: {
-      card: "summary_large_image",
-      title: presentation.title,
-      description: presentation.description,
-      images: [imageUrl],
-    },
+  const handleBackClick = () => {
+    setIsNavigating(true);
+    router.push("/");
   };
-}
-
-export default async function AnswerPage({ params }: AnswerPageParams) {
-  const answer = getAnswer(params.id);
-
-  if (!answer) {
-    notFound();
-  }
 
   return (
     <div className="flex flex-row justify-center pb-20 min-h-screen bg-background">
       <AnswerSessionCache answer={answer} />
+      
+      {/* Loading overlay */}
+      <AnimatePresence>
+        {isNavigating && (
+          <motion.div
+            className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <motion.div
+              className="flex flex-row gap-2 items-center"
+              initial={{ y: 5, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ duration: 0.3 }}
+            >
+              <motion.div
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                className="text-muted-foreground"
+              >
+                <CubeIcon />
+              </motion.div>
+              <div className="text-base text-muted-foreground animate-shimmer-text">
+                Loading home...
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="flex flex-col w-full">
         <div className="sticky top-0 bg-background/95 backdrop-blur-sm z-10">
           <div className="flex items-start py-3 max-w-[500px] mx-auto w-full md:w-[500px]">
-            <Link
-              href="/"
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            <button
+              onClick={handleBackClick}
+              disabled={isNavigating}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer inline-flex items-center gap-1 hover:underline disabled:opacity-50 disabled:cursor-not-allowed bg-transparent border-0 p-0 font-inherit"
             >
               ← Back to home
-            </Link>
+            </button>
           </div>
         </div>
 

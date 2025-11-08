@@ -76,6 +76,41 @@ function escapeSlackMarkdown(text: string): string {
   return escapeSlackText(text).replace(/\*/g, "\\*").replace(/_/g, "\\_").replace(/~/g, "\\~");
 }
 
+interface SlackPreviewPayload {
+  presentation: AnswerPresentation;
+  seed: string;
+}
+
+function base64UrlEncode(buffer: Buffer): string {
+  return buffer
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function createPreviewImageUrl({
+  presentation,
+  seed,
+  baseUrl,
+}: {
+  presentation: AnswerPresentation;
+  seed: string;
+  baseUrl: string;
+}): string {
+  const payload: SlackPreviewPayload = { presentation, seed };
+  const payloadJson = JSON.stringify(payload);
+  const encodedPayload = base64UrlEncode(Buffer.from(payloadJson, "utf8"));
+  const signature = base64UrlEncode(
+    createHmac("sha256", getSlackSigningSecret()).update(encodedPayload).digest()
+  );
+
+  const previewUrl = new URL("/api/slack/preview-image", baseUrl);
+  previewUrl.searchParams.set("payload", encodedPayload);
+  previewUrl.searchParams.set("sig", signature);
+  return previewUrl.toString();
+}
+
 function formatHighlights(highlights: string[], metricLine?: string): string | null {
   if (highlights.length === 0) return null;
 
@@ -103,11 +138,16 @@ function formatHighlights(highlights: string[], metricLine?: string): string | n
 function createSlackBlocks({
   presentation,
   answerUrl,
+  previewImageUrl,
 }: {
   presentation: AnswerPresentation;
   answerUrl: string;
+  previewImageUrl?: string;
 }): KnownBlock[] {
   const blocks: KnownBlock[] = [];
+
+  const normalize = (text?: string | null) =>
+    text ? sanitizePlainText(text).replace(/\s+/g, " ").trim().toLowerCase() : "";
 
   blocks.push({
     type: "header",
@@ -127,30 +167,98 @@ function createSlackBlocks({
   const metricSubtitle = presentation.metricSubtitle
     ? escapeSlackMarkdown(truncate(presentation.metricSubtitle, 120))
     : null;
+  const metricValuePlain = presentation.metricValue
+    ? truncate(sanitizePlainText(presentation.metricValue), 75)
+    : null;
+  const metricLabelPlain = presentation.metricLabel ? sanitizePlainText(presentation.metricLabel) : null;
+  const metricSubtitlePlain = presentation.metricSubtitle
+    ? sanitizePlainText(presentation.metricSubtitle)
+    : null;
 
   if (metricLabel && metricValue) {
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${metricLabel}*\n*${metricValue}*${metricSubtitle ? `\n_${metricSubtitle}_` : ""}`,
+        text: `*${metricLabel}*`,
       },
     });
+
+    blocks.push({
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: metricValuePlain ?? sanitizePlainText(presentation.metricValue ?? ""),
+        emoji: true,
+      },
+    });
+
+    if (metricSubtitle && normalize(metricSubtitlePlain) !== normalize(metricLabelPlain)) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `_${metricSubtitle}_`,
+        },
+      });
+    }
   }
 
   const description = presentation.description?.trim();
   if (description) {
+    const normalizedDescription = normalize(description);
+    const duplicateWithMetric =
+      normalizedDescription === normalize(metricLabelPlain) ||
+      normalizedDescription === normalize(metricValuePlain) ||
+      normalizedDescription === normalize(metricSubtitlePlain);
+
+    if (!duplicateWithMetric) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: escapeSlackMarkdown(truncate(description, 3000)),
+        },
+      });
+    }
+  }
+
+  if (previewImageUrl) {
+    const sanitizedTitle = sanitizePlainText(presentation.title);
+    const altText = truncate(sanitizedTitle, 150) || "Generative answer preview";
     blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: escapeSlackMarkdown(truncate(description, 3000)),
+      type: "image",
+      image_url: previewImageUrl,
+      alt_text: altText,
+      title: {
+        type: "plain_text",
+        text: truncate(sanitizedTitle, 150),
+        emoji: true,
       },
     });
   }
 
-  const metricLine = metricLabel && metricValue ? `${metricLabel}: ${metricValue}` : undefined;
-  const highlights = formatHighlights(presentation.highlights, metricLine);
+  const highlightBlacklist = new Set<string>();
+  if (description) {
+    highlightBlacklist.add(normalize(description));
+  }
+  if (metricLabelPlain) {
+    highlightBlacklist.add(normalize(metricLabelPlain));
+  }
+  if (metricValuePlain) {
+    highlightBlacklist.add(normalize(metricValuePlain));
+  }
+  if (metricSubtitlePlain) {
+    highlightBlacklist.add(normalize(metricSubtitlePlain));
+  }
+
+  const filteredHighlights = presentation.highlights.filter(
+    (highlight) => !highlightBlacklist.has(normalize(highlight))
+  );
+
+  const metricLine =
+    metricLabelPlain && metricValuePlain ? `${metricLabelPlain}: ${metricValuePlain}` : undefined;
+  const highlights = formatHighlights(filteredHighlights, metricLine);
   if (highlights) {
     blocks.push({
       type: "section",
@@ -296,10 +404,22 @@ async function handleAppMention(
     console.log("Building presentation for answer:", answerId);
     const presentation = buildAnswerPresentation(storedAnswer);
     console.log("Presentation built:", { title: presentation.title, description: presentation.description });
+
+    let previewImageUrl: string | undefined;
+    try {
+      previewImageUrl = createPreviewImageUrl({
+        presentation,
+        seed: storedAnswer.id,
+        baseUrl,
+      });
+    } catch (error) {
+      console.error("Failed to generate preview image URL:", error);
+    }
     
     const blocks = createSlackBlocks({
       presentation,
       answerUrl,
+      previewImageUrl,
     });
     const fallbackTitle = truncate(sanitizePlainText(presentation.title), 120);
     const fallbackText = `${fallbackTitle} • ${answerUrl}`;
