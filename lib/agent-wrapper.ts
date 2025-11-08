@@ -1,4 +1,4 @@
-import { cursor } from './cursor-agent';
+import { cursor, CursorStreamEvent } from './cursor-agent';
 import {
   PLANNER_PROMPT,
   DATA_PROMPT,
@@ -130,14 +130,14 @@ async function executeNormalPipeline(
   dataMode?: 'web-search' | 'example-data' | 'mock-database'
 ): Promise<void> {
   // PHASE 1: Planning
-  onUpdate({ 
-    type: 'progress', 
-    phase: 'planning', 
+  onUpdate({
+    type: 'progress',
+    phase: 'planning',
     message: 'Thinking ',
     progress: 10
   });
-  
-  const plan = await planWidget(userMessage, model);
+
+  const plan = await planWidget(userMessage, model, onUpdate);
   agentLogger.info(describePlan(plan), {
     step: 'planning',
     details: plan
@@ -195,7 +195,7 @@ async function executeNormalPipeline(
         progress: 40
       });
 
-      dataResult = await fetchData(finalPlan, userMessage, model);
+      dataResult = await fetchData(finalPlan, userMessage, model, onUpdate);
       break;
 
     case 'example-data':
@@ -211,15 +211,15 @@ async function executeNormalPipeline(
         progress: 40
       });
 
-      dataResult = await generateMockData(finalPlan, userMessage, model);
+      dataResult = await generateMockData(finalPlan, userMessage, model, onUpdate);
       break;
   }
-  
+
   agentLogger.info(describeDataResult(dataResult), {
     step: 'data',
     details: dataResult
   });
-  
+
   // Validate data
   const dataValidation = validateDataSchema(dataResult);
   if (!dataValidation.valid) {
@@ -229,19 +229,19 @@ async function executeNormalPipeline(
     );
     // Continue anyway - widget generation can handle it
   }
-  
+
   // Stream data to frontend for progressive skeleton
   onUpdate({ type: 'data', dataResult });
-  
+
   // PHASE 3: Widget Generation
-  onUpdate({ 
-    type: 'progress', 
-    phase: 'generating', 
+  onUpdate({
+    type: 'progress',
+    phase: 'generating',
     message: 'Building UI',
     progress: 70
   });
-  
-  const widget = await generateWidget(finalPlan, dataResult, userMessage, model);
+
+  const widget = await generateWidget(finalPlan, dataResult, userMessage, model, onUpdate);
   agentLogger.info(describeWidget(widget, finalPlan), {
     step: 'widget',
     details: widget
@@ -393,21 +393,30 @@ function createFallbackPlan(query: string): PlanResult {
 /**
  * Phase 1: Planning - Determine which widget type to use
  */
-async function planWidget(query: string, model: string): Promise<PlanResult> {
+async function planWidget(
+  query: string,
+  model: string,
+  onUpdate?: (update: any) => void
+): Promise<PlanResult> {
   try {
     return await retryWithValidation<PlanResult>(
       async (retryContext) => {
-        const result = await cursor.generateStream({
+        const result = await cursor.generateStreamWithCallback({
           prompt: query + (retryContext || ''),
           systemPrompt: PLANNER_PROMPT,
           model,
           force: true
+        }, (event) => {
+          // Stream agent events to frontend
+          if (onUpdate) {
+            streamAgentEvent(event, onUpdate, 'planning');
+          }
         });
-        
+
         if (!result.success) {
           throw new Error('LLM call failed: ' + (result.error || 'Unknown error'));
         }
-        
+
         return result.finalText;
       },
       validatePlanSchema,
@@ -427,11 +436,16 @@ async function planWidget(query: string, model: string): Promise<PlanResult> {
  * Phase 2a: Fetch real data via web search
  * Exported for use by refresh endpoint
  */
-export async function fetchData(plan: PlanResult, query: string, model: string): Promise<DataResult> {
+export async function fetchData(
+  plan: PlanResult,
+  query: string,
+  model: string,
+  onUpdate?: (update: any) => void
+): Promise<DataResult> {
   const promptWithContext = DATA_PROMPT
     .replace('{widgetType}', plan.widgetType)
     .replace('{dataStructure}', plan.dataStructure);
-  
+
   try {
     return await retryWithValidation<DataResult>(
       async (retryContext) => {
@@ -441,15 +455,18 @@ export async function fetchData(plan: PlanResult, query: string, model: string):
           model,
           force: true
         }, (event) => {
+          if (onUpdate) {
+            streamAgentEvent(event, onUpdate, 'searching');
+          }
           if (event.type === 'tool_call' && event.subtype === 'started') {
             agentLogger.info('Web search started', { step: 'data' });
           }
         });
-        
+
         if (!result.success) {
           throw new Error('LLM call failed: ' + (result.error || 'Unknown error'));
         }
-        
+
         return result.finalText;
       },
       validateDataSchema,
@@ -473,27 +490,36 @@ export async function fetchData(plan: PlanResult, query: string, model: string):
  * Phase 2b: Generate mock data when web search not needed
  * Exported for use by refresh endpoint
  */
-export async function generateMockData(plan: PlanResult, query: string, model: string): Promise<DataResult> {
+export async function generateMockData(
+  plan: PlanResult,
+  query: string,
+  model: string,
+  onUpdate?: (update: any) => void
+): Promise<DataResult> {
   const promptWithContext = DATA_GENERATION_PROMPT
     .replace('{widgetType}', plan.widgetType)
     .replace('{dataStructure}', plan.dataStructure);
-  
+
   try {
     return await retryWithValidation<DataResult>(
       async (retryContext) => {
-        const result = await cursor.generateStream({
+        const result = await cursor.generateStreamWithCallback({
           prompt: `Generate realistic data for: "${query}"
 Widget type: ${plan.widgetType}
 Key entities: ${plan.keyEntities.join(', ')}${retryContext || ''}`,
           systemPrompt: promptWithContext,
           model,
           force: true
+        }, (event) => {
+          if (onUpdate) {
+            streamAgentEvent(event, onUpdate, 'preparing');
+          }
         });
-        
+
         if (!result.success) {
           throw new Error('LLM call failed: ' + (result.error || 'Unknown error'));
         }
-        
+
         return result.finalText;
       },
       validateDataSchema,
@@ -517,15 +543,16 @@ Key entities: ${plan.keyEntities.join(', ')}${retryContext || ''}`,
  * Phase 3: Generate widget JSON configuration
  */
 async function generateWidget(
-  plan: PlanResult, 
-  data: DataResult | null, 
-  query: string, 
-  model: string
+  plan: PlanResult,
+  data: DataResult | null,
+  query: string,
+  model: string,
+  onUpdate?: (update: any) => void
 ): Promise<Widget> {
   try {
     return await retryWithValidation<Widget>(
       async (retryContext) => {
-        const result = await cursor.generateStream({
+        const result = await cursor.generateStreamWithCallback({
           prompt: `USER: "${query}"
 Widget type: ${plan.widgetType}
 Data structure: ${plan.dataStructure}
@@ -535,12 +562,16 @@ Generate a widget JSON configuration that displays this data.${retryContext || '
           systemPrompt: WIDGET_GENERATION_PROMPT,
           model,
           force: true
+        }, (event) => {
+          if (onUpdate) {
+            streamAgentEvent(event, onUpdate, 'generating');
+          }
         });
-        
+
         if (!result.success) {
           throw new Error('LLM call failed: ' + (result.error || 'Unknown error'));
         }
-        
+
         return result.finalText;
       },
       validateWidgetSchema,
@@ -636,6 +667,182 @@ function repairJSON(jsonStr: string): string {
   });
   
   return fixed;
+}
+
+/**
+ * Stream cursor-agent events to the frontend
+ * Converts low-level cursor events into user-friendly messages
+ */
+
+// Track thinking delta count per phase to show periodic updates
+const thinkingCounters: Record<string, number> = {};
+const lastMessageTime: Record<string, number> = {};
+
+function streamAgentEvent(
+  event: CursorStreamEvent,
+  onUpdate: (update: any) => void,
+  phase: string
+): void {
+  let eventMessage: string | null = null;
+
+  // Fun, personality-driven messages based on phase
+  const phaseMessages = {
+    planning: {
+      init: ['Waking up Tony...', 'Initializing Tony...', 'Booting up...'],
+      thinking: [
+        'Analyzing your question...',
+        'Understanding the request...',
+        'Figuring things out...',
+        'Mapping the strategy...',
+        'Connecting the dots...',
+        'Planning the approach...',
+      ],
+      complete: ['Planning next steps...', 'Moving forward...', 'Preparing data phase...']
+    },
+    querying: {
+      init: ['Opening the vault...', 'Diving into data...', 'Accessing database...'],
+      thinking: [
+        'Crunching numbers...',
+        'Analyzing records...',
+        'Scanning data...',
+        'Filtering results...',
+        'Sorting information...',
+        'Extracting insights...',
+      ],
+      complete: ['Moving to design...', 'Starting build phase...', 'Preparing components...']
+    },
+    searching: {
+      init: ['Searching the web...', 'Going online...', 'Fetching live data...'],
+      thinking: [
+        'Scanning results...',
+        'Gathering information...',
+        'Reading sources...',
+        'Verifying data...',
+        'Cross-referencing...',
+        'Compiling findings...',
+      ],
+      complete: ['Moving to design...', 'Starting build phase...', 'Preparing components...']
+    },
+    preparing: {
+      init: ['Generating data...', 'Creating examples...', 'Building dataset...'],
+      thinking: [
+        'Crafting realistic data...',
+        'Making it look good...',
+        'Adding details...',
+        'Structuring information...',
+        'Fine-tuning values...',
+        'Balancing the dataset...',
+      ],
+      complete: ['Moving to design...', 'Starting build phase...', 'Preparing components...']
+    },
+    generating: {
+      init: ['Building your chart...', 'Crafting the UI...', 'Assembling components...'],
+      thinking: [
+        'Polishing the design...',
+        'Adding colors...',
+        'Fine-tuning layout...',
+        'Adjusting spacing...',
+        'Choosing the perfect palette...',
+        'Making it beautiful...',
+      ],
+      complete: ['Running final checks...', 'Reviewing the build...', 'Validating everything...']
+    },
+    validating: {
+      init: ['Quality check...', 'Reviewing work...', 'Final inspection...'],
+      thinking: [
+        'Checking everything...',
+        'Making sure it\'s perfect...',
+        'Validating data...',
+        'Running tests...',
+        'Verifying accuracy...',
+        'Double-checking...',
+      ],
+      complete: ['Wrapping up...', 'Finalizing details...', 'Getting ready...']
+    }
+  };
+
+  // Get messages for current phase
+  const messages = phaseMessages[phase as keyof typeof phaseMessages] || phaseMessages.planning;
+
+  // Throttle messages - only send one every 2 seconds per phase
+  const now = Date.now();
+  const timeSinceLastMessage = now - (lastMessageTime[phase] || 0);
+  const THROTTLE_MS = 2000; // 2 seconds between updates
+
+  // Handle different event types from cursor-agent
+  if (event.type === 'thinking') {
+    if (event.subtype === 'delta') {
+      // Initialize counter for this phase if not exists
+      if (!thinkingCounters[phase]) {
+        thinkingCounters[phase] = 0;
+      }
+
+      thinkingCounters[phase]++;
+
+      // Only send if enough time has passed
+      if (timeSinceLastMessage < THROTTLE_MS) {
+        return;
+      }
+
+      // Show thinking messages sequentially
+      const thinkingMessages = messages.thinking;
+      const index = Math.floor(thinkingCounters[phase] / 15) % thinkingMessages.length;
+      eventMessage = thinkingMessages[index];
+    } else if (event.subtype === 'completed') {
+      // Reset counter for next phase
+      thinkingCounters[phase] = 0;
+      eventMessage = messages.complete[Math.floor(Math.random() * messages.complete.length)];
+    }
+  } else if (event.type === 'system') {
+    if (event.subtype === 'init') {
+      eventMessage = messages.init[Math.floor(Math.random() * messages.init.length)];
+    } else if (event.subtype === 'session_start') {
+      eventMessage = messages.init[Math.floor(Math.random() * messages.init.length)];
+    }
+  } else if (event.type === 'tool_call') {
+    // Extract tool name from tool_call event
+    const toolName = event.tool_call?.name || 'tool';
+
+    if (toolName === 'WebSearch' || toolName === 'web_search') {
+      eventMessage = 'Searching the internet...';
+    } else if (toolName === 'Read' || toolName === 'read') {
+      eventMessage = 'Reading data...';
+    } else if (toolName === 'Grep' || toolName === 'grep') {
+      eventMessage = 'Scanning records...';
+    } else if (event.subtype === 'started') {
+      eventMessage = messages.thinking[Math.floor(Math.random() * messages.thinking.length)];
+    } else if (event.subtype === 'finished') {
+      eventMessage = messages.complete[Math.floor(Math.random() * messages.complete.length)];
+    }
+  } else if (event.type === 'assistant' && event.message?.content?.[0]?.text) {
+    // Stream first line of assistant reasoning
+    const text = event.message.content[0].text;
+    const firstLine = text.split('\n')[0].trim();
+
+    // Only show if it's meaningful (not just JSON or code)
+    if (firstLine.length > 10 &&
+        firstLine.length < 100 &&
+        !firstLine.startsWith('{') &&
+        !firstLine.startsWith('[') &&
+        !firstLine.startsWith('```')) {
+      eventMessage = firstLine;
+    }
+  } else if (event.type === 'result') {
+    if (event.subtype === 'success') {
+      eventMessage = messages.complete[Math.floor(Math.random() * messages.complete.length)];
+    }
+  }
+
+  // Send the event to frontend if we have a message
+  if (eventMessage) {
+    lastMessageTime[phase] = now;
+    onUpdate({
+      type: 'agent_event',
+      phase,
+      message: eventMessage,
+      timestamp: Date.now()
+    });
+  }
 }
 
 function describePlan(plan: PlanResult): string {

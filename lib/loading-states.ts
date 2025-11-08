@@ -15,6 +15,13 @@ export interface LoadingState {
   message: string;
   progress: number;
   subtext?: string;
+  agentEvent?: AgentEvent; // Real-time events from cursor-agent
+}
+
+export interface AgentEvent {
+  type: 'tool_call' | 'assistant' | 'system';
+  message: string;
+  timestamp: number;
 }
 
 export function getLoadingState(phase: LoadingPhase): LoadingState {

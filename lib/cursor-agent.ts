@@ -24,7 +24,7 @@ export interface CursorOptions {
 }
 
 export interface CursorStreamEvent {
-  type: "system" | "user" | "assistant" | "tool_call" | "result";
+  type: "system" | "user" | "assistant" | "tool_call" | "result" | "thinking";
   subtype?: string;
   session_id?: string;
   message?: {

@@ -40,17 +40,8 @@
     }
 }
 
-@keyframes pulse-opacity {
-    0%, 100% {
-        opacity: 0.6;
-    }
-    50% {
-        opacity: 1;
-    }
-}
-
 .animate-shimmer-text {
-    animation: shimmer-text 2.5s linear infinite, pulse-opacity 2s ease-in-out infinite;
+    animation: shimmer-text 2.5s linear infinite;
     background: linear-gradient(
         90deg,
         hsl(var(--muted-foreground)) 0%,

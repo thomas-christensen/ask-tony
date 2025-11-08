@@ -36,11 +36,14 @@ export default function Home() {
   const [isFocused, setIsFocused] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>('composer-1');
   const [dataMode, setDataMode] = useState<DataMode | undefined>(undefined);
-  
+
   // Progressive skeleton states
   const [planInfo, setPlanInfo] = useState<any>(null);
   const [dataInfo, setDataInfo] = useState<any>(null);
   const [currentQuery, setCurrentQuery] = useState<string>("");
+
+  // Agent events for real-time activity feed
+  const [agentEvents, setAgentEvents] = useState<Array<{ message: string; timestamp: number }>>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [messagesContainerRef, messagesEndRef] =
@@ -115,11 +118,12 @@ export default function Home() {
 
     setIsLoading(true);
     setLoadingState({ phase: 'analyzing', message: 'Understanding your question', progress: 5, subtext: 'Analyzing intent and requirements' });
-    
-    // Reset skeleton states
+
+    // Reset skeleton states and agent events
     setPlanInfo(null);
     setDataInfo(null);
     setCurrentQuery(userMessage);
+    setAgentEvents([]);
 
     // Add user message
     setMessages((messages) => [
@@ -168,6 +172,9 @@ export default function Home() {
               if (data.type === "progress") {
                 // Update loading state with progress, message, and subtext
                 setLoadingState(data);
+              } else if (data.type === "agent_event") {
+                // Add agent event to the activity feed
+                setAgentEvents((prev) => [...prev, { message: data.message, timestamp: data.timestamp }]);
               } else if (data.type === "plan" && data.plan) {
                 // Receive plan information for progressive skeleton
                 setPlanInfo(data.plan);
@@ -317,7 +324,7 @@ export default function Home() {
           {isLoading && loadingState && (
             <>
               {/* Original shimmer indicator at top */}
-              <LoadingIndicator loadingState={loadingState} />
+              <LoadingIndicator loadingState={loadingState} agentEvents={agentEvents} />
               
               {/* Progressive skeleton below - only show during component creation phases */}
               {(loadingState.phase === 'designing' || 
