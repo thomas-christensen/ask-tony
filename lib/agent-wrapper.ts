@@ -1,17 +1,18 @@
 import { cursor } from './cursor-agent';
-import { 
-  PLANNER_PROMPT, 
-  DATA_PROMPT, 
-  DATA_GENERATION_PROMPT, 
-  WIDGET_GENERATION_PROMPT 
+import {
+  PLANNER_PROMPT,
+  DATA_PROMPT,
+  DATA_GENERATION_PROMPT,
+  WIDGET_GENERATION_PROMPT
 } from './widget-prompts';
-import { 
-  validateWidgetSchema, 
-  validatePlanSchema, 
+import {
+  validateWidgetSchema,
+  validatePlanSchema,
   validateDataSchema,
   validateWidgetData
 } from './widget-validator';
 import type { Widget, WidgetResponse, PlanResult, DataResult } from './widget-schema';
+import { agentLogger } from './agent-logger';
 
 /**
  * Component configuration interface for chart components
@@ -72,7 +73,10 @@ async function attemptWithFallbacks(
     await executeNormalPipeline(userMessage, onUpdate, modelToUse, dataMode);
     return;
   } catch (error1) {
-    console.warn('⚠️ Attempt 1 failed, trying alternative approach:', error1);
+    agentLogger.warn(
+      `Primary pipeline attempt failed (${describeError(error1)}); evaluating fallback`,
+      { step: 'fallback', details: error1 }
+    );
     
     // Only try fallback if we're not already using example data
     if (dataMode !== 'example-data') {
@@ -88,13 +92,16 @@ async function attemptWithFallbacks(
         await executeNormalPipeline(userMessage, onUpdate, modelToUse, 'example-data');
         return;
       } catch (error2) {
-        console.warn('⚠️ Attempt 2 failed, using guaranteed fallback:', error2);
+        agentLogger.warn(
+          `Example data fallback failed (${describeError(error2)}); using guaranteed widget`,
+          { step: 'fallback', details: error2 }
+        );
       }
     }
   }
   
   // Strategy 3: Guaranteed fallback widget (never throws)
-  console.log('🛟 Using guaranteed fallback widget');
+  agentLogger.info('Falling back to guaranteed widget', { step: 'fallback' });
   const fallbackWidget = createFallbackWidget(
     userMessage,
     'processing your request',
@@ -129,7 +136,10 @@ async function executeNormalPipeline(
   });
   
   const plan = await planWidget(userMessage, model);
-  console.log('📋 Plan:', plan);
+  agentLogger.info(describePlan(plan), {
+    step: 'planning',
+    details: plan
+  });
   
   // Validate plan
   const planValidation = validatePlanSchema(plan);
@@ -154,6 +164,10 @@ async function executeNormalPipeline(
   let dataResult: DataResult | null = null;
   
   if (finalPlan.needsWebSearch) {
+    agentLogger.info(describeWebSearch(finalPlan), {
+      step: 'data',
+      details: { searchQuery: finalPlan.searchQuery, widgetType: finalPlan.widgetType }
+    });
     onUpdate({ 
       type: 'progress', 
       phase: 'searching', 
@@ -163,6 +177,10 @@ async function executeNormalPipeline(
     
     dataResult = await fetchData(finalPlan, userMessage, model);
   } else {
+    agentLogger.info(describeMockDataPath(finalPlan), {
+      step: 'data',
+      details: { widgetType: finalPlan.widgetType, dataStructure: finalPlan.dataStructure }
+    });
     onUpdate({ 
       type: 'progress', 
       phase: 'preparing', 
@@ -173,12 +191,18 @@ async function executeNormalPipeline(
     dataResult = await generateMockData(finalPlan, userMessage, model);
   }
   
-  console.log('📊 Data:', dataResult);
+  agentLogger.info(describeDataResult(dataResult), {
+    step: 'data',
+    details: dataResult
+  });
   
   // Validate data
   const dataValidation = validateDataSchema(dataResult);
   if (!dataValidation.valid) {
-    console.warn('⚠️ Data validation warning:', dataValidation.errors);
+    agentLogger.warn(
+      `Data validation reported ${dataValidation.errors.length} issue(s)`,
+      { step: 'data', details: dataValidation.errors }
+    );
     // Continue anyway - widget generation can handle it
   }
   
@@ -194,7 +218,10 @@ async function executeNormalPipeline(
   });
   
   const widget = await generateWidget(finalPlan, dataResult, userMessage, model);
-  console.log('🎨 Widget:', widget);
+  agentLogger.info(describeWidget(widget, finalPlan), {
+    step: 'widget',
+    details: widget
+  });
   
   // PHASE 4: Validation
   onUpdate({ 
@@ -212,7 +239,10 @@ async function executeNormalPipeline(
   // Additional data validation
   const dataCheck = validateWidgetData(widgetValidation.widget!);
   if (!dataCheck.valid) {
-    console.warn('⚠️ Widget data issues:', dataCheck.errors);
+    agentLogger.warn(
+      `Widget data validation reported ${dataCheck.errors.length} issue(s)`,
+      { step: 'validation', details: dataCheck.errors }
+    );
     // Continue - renderer can handle missing data gracefully
   }
   
@@ -245,7 +275,13 @@ async function retryWithValidation<T>(
         ? `\n\nPREVIOUS ATTEMPT FAILED: ${lastError?.message}\nPlease fix these issues and return valid JSON.`
         : undefined;
       
-      console.log(`🔄 ${phaseName} - Attempt ${attempt + 1}/${maxRetries + 1}${retryContext ? ' (retry with context)' : ''}`);
+      agentLogger.info(
+        `${phaseName} attempt ${attempt + 1}/${maxRetries + 1}`,
+        {
+          step: phaseName,
+          details: retryContext ? 'retrying with validation context' : undefined
+        }
+      );
       
       const text = await llmCall(retryContext);
       lastText = text;
@@ -255,7 +291,10 @@ async function retryWithValidation<T>(
       const validation = validator(parsed);
       
       if (validation.valid) {
-        console.log(`✅ ${phaseName} succeeded on attempt ${attempt + 1}`);
+        agentLogger.info(`${phaseName} succeeded`, {
+          step: phaseName,
+          details: `attempt ${attempt + 1}`
+        });
         // Return the validated data from the validator
         const validatedKey = Object.keys(validation).find(k => k !== 'valid' && k !== 'errors');
         return (validatedKey ? validation[validatedKey] : parsed) as T;
@@ -264,10 +303,16 @@ async function retryWithValidation<T>(
       throw new Error(`Validation failed: ${validation.errors.join(', ')}`);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unknown error');
-      console.warn(`⚠️ ${phaseName} attempt ${attempt + 1} failed:`, lastError.message);
+      agentLogger.warn(
+        `${phaseName} attempt ${attempt + 1} failed (${describeError(lastError)})`,
+        { step: phaseName, details: lastError }
+      );
       
       if (attempt === maxRetries) {
-        console.error(`❌ ${phaseName} failed after ${maxRetries + 1} attempts`);
+        agentLogger.error(
+          `${phaseName} failed after ${maxRetries + 1} attempts`,
+          { step: phaseName, details: lastError }
+        );
         throw lastError;
       }
       
@@ -284,7 +329,10 @@ async function retryWithValidation<T>(
  * This NEVER throws - always returns a valid widget
  */
 function createFallbackWidget(query: string, phase: string, error?: string): Widget {
-  console.log('🛟 Creating fallback widget for failed generation');
+  agentLogger.info('Creating fallback widget', {
+    step: 'fallback',
+    details: error ? `reason: ${error}` : undefined
+  });
   
   return {
     type: 'metric-card',
@@ -305,7 +353,7 @@ function createFallbackWidget(query: string, phase: string, error?: string): Wid
  * Create a fallback plan when planning fails
  */
 function createFallbackPlan(query: string): PlanResult {
-  console.log('🛟 Creating fallback plan');
+  agentLogger.info('Creating fallback plan', { step: 'fallback' });
   
   return {
     widgetType: 'metric-card',
@@ -341,7 +389,10 @@ async function planWidget(query: string, model: string): Promise<PlanResult> {
       2
     );
   } catch (error) {
-    console.error('❌ Planning failed completely, using fallback plan');
+    agentLogger.error('Planning failed after retries; using fallback plan', {
+      step: 'planning',
+      details: error
+    });
     return createFallbackPlan(query);
   }
 }
@@ -365,7 +416,7 @@ export async function fetchData(plan: PlanResult, query: string, model: string):
           force: true
         }, (event) => {
           if (event.type === 'tool_call' && event.subtype === 'started') {
-            console.log('🔍 Web search started');
+            agentLogger.info('Web search started', { step: 'data' });
           }
         });
         
@@ -380,7 +431,10 @@ export async function fetchData(plan: PlanResult, query: string, model: string):
       2
     );
   } catch (error) {
-    console.warn('⚠️ Data fetching failed completely, using empty fallback');
+    agentLogger.warn(
+      `Data fetching failed (${describeError(error)}); using empty fallback`,
+      { step: 'data', details: error }
+    );
     return {
       data: {},
       source: null,
@@ -421,7 +475,10 @@ Key entities: ${plan.keyEntities.join(', ')}${retryContext || ''}`,
       2
     );
   } catch (error) {
-    console.warn('⚠️ Mock data generation failed completely, using empty fallback');
+    agentLogger.warn(
+      `Mock data generation failed (${describeError(error)}); using empty fallback`,
+      { step: 'data', details: error }
+    );
     return {
       data: {},
       source: null,
@@ -465,8 +522,15 @@ Generate a widget JSON configuration that displays this data.${retryContext || '
       2
     );
   } catch (error) {
-    console.error('❌ Widget generation failed completely, creating fallback widget');
-    return createFallbackWidget(query, 'generating your visualization', error instanceof Error ? error.message : undefined);
+    agentLogger.error(
+      'Widget generation failed after retries; creating fallback widget',
+      { step: 'widget', details: error }
+    );
+    return createFallbackWidget(
+      query,
+      'generating your visualization',
+      error instanceof Error ? error.message : undefined
+    );
   }
 }
 
@@ -493,10 +557,17 @@ function extractJSON(text: string): any {
     // Step 4: Try to parse
     return JSON.parse(jsonStr);
   } catch (error) {
-    console.error('❌ JSON extraction failed:', error);
-    console.error('📄 Original text (first 1000 chars):', text.slice(0, 1000));
-    console.error('📄 Original text (last 500 chars):', text.slice(-500));
-    
+    agentLogger.error('JSON extraction failed', { step: 'parsing', details: error });
+    if (agentLogger.isDebugEnabled()) {
+      agentLogger.debug('Original text (first 1000 chars)', {
+        step: 'parsing',
+        details: text.slice(0, 1000)
+      });
+      agentLogger.debug('Original text (last 500 chars)', {
+        step: 'parsing',
+        details: text.slice(-500)
+      });
+    }
     // Throw with context for retry logic
     throw new Error(`Failed to parse JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
@@ -555,6 +626,77 @@ function repairJSON(jsonStr: string): string {
   });
   
   return fixed;
+}
+
+function describePlan(plan: PlanResult): string {
+  const webSearchPart = plan.needsWebSearch
+    ? `will search the web using "${formatSearchQuery(plan.searchQuery)}"`
+    : "does not require a web search";
+  const keyEntities =
+    plan.keyEntities && plan.keyEntities.length > 0
+      ? `focusing on ${plan.keyEntities.map(entity => `"${entity}"`).join(", ")}`
+      : "with no specific key entities";
+  return `Plan ready: build a ${plan.widgetType} (${plan.dataStructure}) that ${webSearchPart}, ${keyEntities}.`;
+}
+
+function describeWebSearch(plan: PlanResult): string {
+  return `Searching the web for "${formatSearchQuery(plan.searchQuery)}" to gather real data for the ${plan.widgetType}.`;
+}
+
+function describeMockDataPath(plan: PlanResult): string {
+  return `Generating example data for the ${plan.widgetType} (${plan.dataStructure}) without web search.`;
+}
+
+function describeDataResult(data: DataResult | null): string {
+  if (!data) {
+    return "Data phase skipped (no data required).";
+  }
+
+  const fieldCount = data.data ? Object.keys(data.data).length : 0;
+  const confidence = data.confidence ? `${data.confidence} confidence` : "unknown confidence";
+  const source = data.source ? `source: ${truncate(data.source, 80)}` : "no source provided";
+  const hasContent = fieldCount > 0 ? `${fieldCount} field${fieldCount === 1 ? "" : "s"} ready` : "no structured fields returned";
+
+  return `Data ready: ${hasContent}, ${confidence}, ${source}.`;
+}
+
+function describeWidget(widget: Widget, plan: PlanResult): string {
+  const dataKeys =
+    widget && typeof widget === 'object' && widget.data
+      ? Object.keys(widget.data)
+      : [];
+
+  const configPart = widget.config ? "custom config applied" : "default styling";
+  const fieldCount = dataKeys.length;
+  const fieldPart = fieldCount > 0
+    ? `${fieldCount} data field${fieldCount === 1 ? "" : "s"}`
+    : "no data fields";
+
+  return `Widget ready: ${plan.widgetType} displaying ${fieldPart} with ${configPart}.`;
+}
+
+function formatSearchQuery(searchQuery: string | null): string {
+  if (searchQuery && searchQuery.trim().length > 0) {
+    return truncate(searchQuery.trim(), 80);
+  }
+  return "auto-generated query";
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  return 'Unknown error';
+}
+
+function truncate(value: string, length: number): string {
+  if (value.length <= length) {
+    return value;
+  }
+  return `${value.slice(0, length - 3)}...`;
 }
 
 /**

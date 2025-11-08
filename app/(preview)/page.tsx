@@ -8,12 +8,13 @@ import { MasonryIcon, VercelIcon, CubeIcon } from "@/components/icons";
 import Link from "next/link";
 import { ModelSelector } from "@/components/model-selector";
 import { DataModeToggle, type DataMode } from "@/components/data-mode-toggle";
-import { sendMessage } from "./actions";
 import { renderWidgetResponse } from "@/lib/widget-renderer";
 import { WidgetResponse } from "@/lib/widget-schema";
 import { LoadingState } from "@/lib/loading-states";
 import { LoadingIndicator } from "@/components/loading-indicator";
 import { ProgressiveSkeleton } from "@/components/progressive-skeleton";
+import { generateAnswerId } from "@/lib/answer-utils";
+import { sendMessage } from "./actions";
 
 interface MessageItem {
   id: string;
@@ -23,6 +24,7 @@ interface MessageItem {
   plan?: any; // PlanResult from agent
   query?: string; // Original user query
   dataMode?: 'web-search' | 'example-data';
+  answerId?: string; // Unique ID for shareable answer links
 }
 
 export default function Home() {
@@ -57,12 +59,38 @@ export default function Home() {
     }
   }, []);
 
+  // Load saved messages from sessionStorage on mount
+  useEffect(() => {
+    try {
+      const savedMessages = sessionStorage.getItem('conversation-messages');
+      if (savedMessages) {
+        const parsed = JSON.parse(savedMessages);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load saved messages:', e);
+    }
+  }, []);
+
+  // Save messages to sessionStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        sessionStorage.setItem('conversation-messages', JSON.stringify(messages));
+      } catch (e) {
+        console.warn('Failed to save messages to sessionStorage:', e);
+      }
+    }
+  }, [messages]);
+
 
   const suggestedActions = [
     {
       title: "Show me",
       label: "the weather in San Francisco",
-      action: "What's the weather in Tokyo?",
+      action: "What's the weather in San Francisco?",
     },
     {
       title: "Display",
@@ -72,7 +100,7 @@ export default function Home() {
     {
       title: "Compare",
       label: "iPhone Air vs 17 Pro",
-      action: "Compare iPhone 17 Pro and iPhone Air",
+      action: "Compare iPhone Air and iPhone 17 Pro",
     },
     {
       title: "Create",
@@ -162,6 +190,20 @@ export default function Home() {
 
       // Add final response to messages with plan and query for live updates
       if (finalResponse) {
+        const answerId = generateAnswerId();
+        
+        // Persist to sessionStorage for shareable links
+        try {
+          sessionStorage.setItem(answerId, JSON.stringify({
+            query: userMessage,
+            response: finalResponse,
+            plan: capturedPlan,
+            dataMode: dataMode
+          }));
+        } catch (e) {
+          console.warn('Failed to persist answer to sessionStorage:', e);
+        }
+        
         setMessages((messages) => [
           ...messages,
           { 
@@ -171,7 +213,8 @@ export default function Home() {
             response: finalResponse,
             plan: capturedPlan,
             query: userMessage,
-            dataMode: dataMode
+            dataMode: dataMode,
+            answerId: answerId
           },
         ]);
       } else {
@@ -226,6 +269,7 @@ export default function Home() {
                       ? renderWidgetResponse(message.response, message.plan, message.query, message.dataMode)
                       : message.content
                   }
+                  answerId={message.answerId}
                 />
               </motion.div>
             );

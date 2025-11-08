@@ -1,5 +1,6 @@
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
+import { agentLogger } from "./agent-logger";
 
 const execAsync = promisify(exec);
 
@@ -59,13 +60,21 @@ class CursorAgent {
    * Check if cursor-agent CLI is available
    */
   private async checkCursorAgentAvailable(): Promise<boolean> {
-    console.log("🔍 Checking for cursor-agent CLI...");
-    console.log("CURSOR_API_KEY set:", !!process.env.CURSOR_API_KEY);
+    agentLogger.info("Checking cursor-agent CLI availability", {
+      step: "cursor-cli"
+    });
+    agentLogger.debug("cursor-agent env snapshot", {
+      step: "cursor-cli",
+      details: { hasApiKey: !!process.env.CURSOR_API_KEY }
+    });
     
     try {
       const { stdout } = await execAsync("which cursor-agent");
       if (stdout.trim().length > 0) {
-        console.log("✅ cursor-agent found:", stdout.trim());
+        agentLogger.info("cursor-agent CLI found in PATH", {
+          step: "cursor-cli",
+          details: stdout.trim()
+        });
         return true;
       }
     } catch (e) {
@@ -79,14 +88,19 @@ class CursorAgent {
         await execAsync(`test -x ${loc}/cursor-agent`);
         const binDir = loc.replace("$HOME", process.env.HOME || "~");
         process.env.PATH = `${binDir}:${process.env.PATH}`;
-        console.log(`✅ Found cursor-agent in ${loc}`);
+        agentLogger.info("cursor-agent CLI found in fallback location", {
+          step: "cursor-cli",
+          details: loc
+        });
         return true;
       } catch (e) {
         // Try next location
       }
     }
     
-    console.error("❌ cursor-agent not found. Please ensure it's installed.");
+    agentLogger.error("cursor-agent CLI not found. Please install it.", {
+      step: "cursor-cli"
+    });
     return false;
   }
 
@@ -107,7 +121,7 @@ class CursorAgent {
     const isAvailable = await this.checkCursorAgentAvailable();
     if (!isAvailable) {
       const errorMsg = "cursor-agent CLI not found. Please install it: curl -fsS https://cursor.com/install | bash";
-      console.error("❌", errorMsg);
+      agentLogger.error(errorMsg, { step: "cursor-cli" });
       return {
         success: false,
         events: [],
@@ -133,17 +147,26 @@ class CursorAgent {
 
       const command = this.buildCommand(opts);
       
-      // Debug: log the command
-      const promptPreview = opts.prompt.slice(0, 100) + (opts.prompt.length > 100 ? '...' : '');
-      const systemPromptPreview = opts.systemPrompt ? opts.systemPrompt.slice(0, 100) + '...' : 'none';
-      console.log('🚀 Running cursor-agent with:', {
-        model: opts.model,
-        force: opts.force,
-        outputFormat: opts.outputFormat,
-        systemPromptPreview,
-        promptPreview,
-        commandLength: command.length
+      agentLogger.info("Starting cursor-agent stream", {
+        step: "cursor-run",
+        details: { model: opts.model, force: opts.force }
       });
+      if (agentLogger.isDebugEnabled()) {
+        const promptPreview =
+          opts.prompt.slice(0, 100) + (opts.prompt.length > 100 ? "..." : "");
+        const systemPromptPreview = opts.systemPrompt
+          ? opts.systemPrompt.slice(0, 100) + "..."
+          : "none";
+        agentLogger.debug("cursor-agent invocation details", {
+          step: "cursor-run",
+          details: {
+            outputFormat: opts.outputFormat,
+            systemPromptPreview,
+            promptPreview,
+            commandLength: command.length
+          }
+        });
+      }
 
       const child = spawn("sh", ["-c", command], {
         env,
@@ -154,6 +177,9 @@ class CursorAgent {
       const timeout = setTimeout(() => {
         if (resolved) return;
         resolved = true;
+        agentLogger.warn("cursor-agent stream timed out after 5 minutes", {
+          step: "cursor-run"
+        });
         try {
           child.kill("SIGTERM");
         } catch {}
@@ -170,6 +196,10 @@ class CursorAgent {
         if (resolved) return;
         resolved = true;
         clearTimeout(timeout);
+        agentLogger.error("cursor-agent process error", {
+          step: "cursor-run",
+          details: err
+        });
         resolve({
           success: false,
           events: [],
@@ -189,8 +219,11 @@ class CursorAgent {
             events.push(event);
             
             // Debug: log event types
-            if (event.type !== "assistant") {
-              console.log('📨 Received event type:', event.type, event.subtype || '');
+            if (agentLogger.isDebugEnabled() && event.type !== "assistant") {
+              agentLogger.debug(`Received event: ${event.type}`, {
+                step: "cursor-run",
+                details: event.subtype || null
+              });
             }
 
             if (onEvent) {
@@ -201,8 +234,11 @@ class CursorAgent {
               const textChunk = event.message.content[0].text;
               accumulatedText += textChunk;
               // Debug: log first few chunks
-              if (accumulatedText.length < 500) {
-                console.log('📝 Received text chunk:', textChunk.slice(0, 100));
+              if (agentLogger.isDebugEnabled() && accumulatedText.length < 500) {
+                agentLogger.debug("Received text chunk", {
+                  step: "cursor-run",
+                  details: textChunk.slice(0, 100)
+                });
               }
             }
 
@@ -213,9 +249,21 @@ class CursorAgent {
               clearTimeout(timeout);
               
               // Debug: log what we got
-              console.log('✅ Got result event. Total text length:', finalText.length);
-              console.log('📄 First 300 chars of finalText:', finalText.slice(0, 300));
-              console.log('📄 Last 300 chars of finalText:', finalText.slice(-300));
+              const duration = event.duration_ms || Date.now() - startTime;
+              agentLogger.info("cursor-agent stream complete", {
+                step: "cursor-run",
+                details: { textLength: finalText.length, durationMs: duration }
+              });
+              if (agentLogger.isDebugEnabled()) {
+                agentLogger.debug("Result preview (head)", {
+                  step: "cursor-run",
+                  details: finalText.slice(0, 300)
+                });
+                agentLogger.debug("Result preview (tail)", {
+                  step: "cursor-run",
+                  details: finalText.slice(-300)
+                });
+              }
               
               // Resolve immediately when we get the result
               // Let the process exit naturally
@@ -238,7 +286,11 @@ class CursorAgent {
         const errorStr = data.toString();
         error = errorStr;
         // Always log stderr for debugging
-        console.error("📢 cursor-agent stderr:", errorStr.trim());
+        agentLogger.warn("cursor-agent stderr output", {
+          step: "cursor-run",
+          details: errorStr.trim(),
+          alwaysDetails: true
+        });
       });
 
       child.on("close", (code: number | null) => {
@@ -246,6 +298,12 @@ class CursorAgent {
         resolved = true;
         clearTimeout(timeout);
         const duration_ms = Date.now() - startTime;
+        if (agentLogger.isDebugEnabled()) {
+          agentLogger.debug("cursor-agent process closed", {
+            step: "cursor-run",
+            details: { exitCode: code, durationMs: duration_ms }
+          });
+        }
 
         resolve({
           success: code === 0,

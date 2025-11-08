@@ -1,17 +1,18 @@
 import { cursor } from './cursor-agent';
-import { 
-  PLANNER_PROMPT, 
-  DATA_PROMPT, 
-  DATA_GENERATION_PROMPT, 
-  WIDGET_GENERATION_PROMPT 
+import {
+  PLANNER_PROMPT,
+  DATA_PROMPT,
+  DATA_GENERATION_PROMPT,
+  WIDGET_GENERATION_PROMPT
 } from './widget-prompts';
-import { 
-  validateWidgetSchema, 
-  validatePlanSchema, 
+import {
+  validateWidgetSchema,
+  validatePlanSchema,
   validateDataSchema,
   validateWidgetData
 } from './widget-validator';
 import type { Widget, WidgetResponse, PlanResult, DataResult } from './widget-schema';
+import { agentLogger } from './agent-logger';
 
 /**
  * Simplified agent orchestration for widget-based generative UI
@@ -39,7 +40,10 @@ export async function queryAgentStream(
     });
     
     const plan = await planWidget(userMessage, modelToUse);
-    console.log('📋 Plan:', plan);
+    agentLogger.info(describePlan(plan), {
+      step: 'planning',
+      details: plan
+    });
     
     // Validate plan
     const planValidation = validatePlanSchema(plan);
@@ -54,6 +58,10 @@ export async function queryAgentStream(
     let dataResult: DataResult | null = null;
     
     if (plan.needsWebSearch) {
+      agentLogger.info(describeWebSearch(plan), {
+        step: 'data',
+        details: { searchQuery: plan.searchQuery, widgetType: plan.widgetType }
+      });
       onUpdate({ 
         type: 'progress', 
         phase: 'searching', 
@@ -63,6 +71,10 @@ export async function queryAgentStream(
       
       dataResult = await fetchData(plan, userMessage, modelToUse);
     } else {
+      agentLogger.info(describeMockDataPath(plan), {
+        step: 'data',
+        details: { widgetType: plan.widgetType, dataStructure: plan.dataStructure }
+      });
       onUpdate({ 
         type: 'progress', 
         phase: 'preparing', 
@@ -73,12 +85,18 @@ export async function queryAgentStream(
       dataResult = await generateMockData(plan, userMessage, modelToUse);
     }
     
-    console.log('📊 Data:', dataResult);
+    agentLogger.info(describeDataResult(dataResult), {
+      step: 'data',
+      details: dataResult
+    });
     
     // Validate data
     const dataValidation = validateDataSchema(dataResult);
     if (!dataValidation.valid) {
-      console.warn('⚠️ Data validation warning:', dataValidation.errors);
+      agentLogger.warn(
+        `Data validation reported ${dataValidation.errors.length} issue(s)`,
+        { step: 'data', details: dataValidation.errors }
+      );
       // Continue anyway - widget generation can handle it
     }
     
@@ -94,7 +112,10 @@ export async function queryAgentStream(
     });
     
     const widget = await generateWidget(plan, dataResult, userMessage, modelToUse);
-    console.log('🎨 Widget:', widget);
+    agentLogger.info(describeWidget(widget, plan), {
+      step: 'widget',
+      details: widget
+    });
     
     // PHASE 4: Validation
     onUpdate({ 
@@ -112,7 +133,10 @@ export async function queryAgentStream(
     // Additional data validation
     const dataCheck = validateWidgetData(widgetValidation.widget!);
     if (!dataCheck.valid) {
-      console.warn('⚠️ Widget data issues:', dataCheck.errors);
+      agentLogger.warn(
+        `Widget data validation reported ${dataCheck.errors.length} issue(s)`,
+        { step: 'validation', details: dataCheck.errors }
+      );
       // Continue - renderer can handle missing data gracefully
     }
     
@@ -126,7 +150,10 @@ export async function queryAgentStream(
     });
     
   } catch (error) {
-    console.error('❌ Agent orchestration error:', error);
+    agentLogger.error('Agent orchestration error', {
+      step: 'orchestration',
+      details: error
+    });
     onUpdate({
       type: 'complete',
       response: {
@@ -171,12 +198,15 @@ async function fetchData(plan: PlanResult, query: string, model: string): Promis
   }, (event) => {
     // Could stream search progress here if needed
     if (event.type === 'tool_call' && event.subtype === 'started') {
-      console.log('🔍 Web search started');
+      agentLogger.info('Web search started', { step: 'data' });
     }
   });
   
   if (!result.success) {
-    console.warn('⚠️ Data fetching failed, using fallback');
+    agentLogger.warn('Data fetching failed; using fallback', {
+      step: 'data',
+      details: result.error
+    });
     return {
       data: {},
       source: null,
@@ -205,7 +235,10 @@ Key entities: ${plan.keyEntities.join(', ')}`,
   });
   
   if (!result.success) {
-    console.warn('⚠️ Mock data generation failed');
+    agentLogger.warn('Mock data generation failed; using empty fallback', {
+      step: 'data',
+      details: result.error
+    });
     return {
       data: {},
       source: null,
@@ -262,10 +295,76 @@ function extractJSON(text: string): any {
     // Try parsing the whole text
     return JSON.parse(withoutMarkdown);
   } catch (error) {
-    console.error('Failed to extract JSON:', error);
-    console.error('Text was:', text.slice(0, 500));
+    agentLogger.error('JSON extraction failed', { step: 'parsing', details: error });
+    if (agentLogger.isDebugEnabled()) {
+      agentLogger.debug('Original text snippet', {
+        step: 'parsing',
+        details: text.slice(0, 500)
+      });
+    }
     throw new Error('Failed to parse JSON response from LLM');
   }
+}
+
+function describePlan(plan: PlanResult): string {
+  const webSearchPart = plan.needsWebSearch
+    ? `will search the web using "${formatSearchQuery(plan.searchQuery)}"`
+    : "does not require a web search";
+  const keyEntities =
+    plan.keyEntities && plan.keyEntities.length > 0
+      ? `focusing on ${plan.keyEntities.map(entity => `"${entity}"`).join(", ")}`
+      : "with no specific key entities";
+  return `Plan ready: build a ${plan.widgetType} (${plan.dataStructure}) that ${webSearchPart}, ${keyEntities}.`;
+}
+
+function describeWebSearch(plan: PlanResult): string {
+  return `Searching the web for "${formatSearchQuery(plan.searchQuery)}" to gather real data for the ${plan.widgetType}.`;
+}
+
+function describeMockDataPath(plan: PlanResult): string {
+  return `Generating example data for the ${plan.widgetType} (${plan.dataStructure}) without web search.`;
+}
+
+function describeDataResult(data: DataResult | null): string {
+  if (!data) {
+    return "Data phase skipped (no data required).";
+  }
+
+  const fieldCount = data.data ? Object.keys(data.data).length : 0;
+  const confidence = data.confidence ? `${data.confidence} confidence` : "unknown confidence";
+  const source = data.source ? `source: ${truncate(data.source, 80)}` : "no source provided";
+  const hasContent = fieldCount > 0 ? `${fieldCount} field${fieldCount === 1 ? "" : "s"} ready` : "no structured fields returned";
+
+  return `Data ready: ${hasContent}, ${confidence}, ${source}.`;
+}
+
+function describeWidget(widget: Widget, plan: PlanResult): string {
+  const dataKeys =
+    widget && typeof widget === 'object' && widget.data
+      ? Object.keys(widget.data)
+      : [];
+
+  const configPart = widget.config ? "custom config applied" : "default styling";
+  const fieldCount = dataKeys.length;
+  const fieldPart = fieldCount > 0
+    ? `${fieldCount} data field${fieldCount === 1 ? "" : "s"}`
+    : "no data fields";
+
+  return `Widget ready: ${plan.widgetType} displaying ${fieldPart} with ${configPart}.`;
+}
+
+function formatSearchQuery(searchQuery: string | null): string {
+  if (searchQuery && searchQuery.trim().length > 0) {
+    return truncate(searchQuery.trim(), 80);
+  }
+  return "auto-generated query";
+}
+
+function truncate(value: string, length: number): string {
+  if (value.length <= length) {
+    return value;
+  }
+  return `${value.slice(0, length - 3)}...`;
 }
 
 /**
