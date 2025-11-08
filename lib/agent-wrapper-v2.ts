@@ -11,6 +11,7 @@ import {
   validateDataSchema,
   validateWidgetData
 } from './widget-validator';
+import { extractJSON } from './json-extractor';
 import type { Widget, WidgetResponse, PlanResult, DataResult } from './widget-schema';
 import { agentLogger } from './agent-logger';
 
@@ -56,32 +57,32 @@ export async function queryAgentStream(
     
     // PHASE 2: Data Fetching/Generation (if needed)
     let dataResult: DataResult | null = null;
-    
-    if (plan.needsWebSearch) {
+
+    if (plan.dataSource === 'web-search') {
       agentLogger.info(describeWebSearch(plan), {
         step: 'data',
         details: { searchQuery: plan.searchQuery, widgetType: plan.widgetType }
       });
-      onUpdate({ 
-        type: 'progress', 
-        phase: 'searching', 
+      onUpdate({
+        type: 'progress',
+        phase: 'searching',
         message: 'Fetching data',
         progress: 40
       });
-      
+
       dataResult = await fetchData(plan, userMessage, modelToUse);
     } else {
       agentLogger.info(describeMockDataPath(plan), {
         step: 'data',
         details: { widgetType: plan.widgetType, dataStructure: plan.dataStructure }
       });
-      onUpdate({ 
-        type: 'progress', 
-        phase: 'preparing', 
+      onUpdate({
+        type: 'progress',
+        phase: 'preparing',
         message: 'Generating data',
         progress: 40
       });
-      
+
       dataResult = await generateMockData(plan, userMessage, modelToUse);
     }
     
@@ -277,38 +278,13 @@ Generate a widget JSON configuration that displays this data.`,
   return extractJSON(result.finalText);
 }
 
-/**
- * Extract JSON from LLM response
- * More robust than code extraction - just finds JSON object
- */
-function extractJSON(text: string): any {
-  try {
-    // Remove markdown code blocks if present
-    const withoutMarkdown = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1');
-    
-    // Find JSON object (handles nested objects)
-    const jsonMatch = withoutMarkdown.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    
-    // Try parsing the whole text
-    return JSON.parse(withoutMarkdown);
-  } catch (error) {
-    agentLogger.error('JSON extraction failed', { step: 'parsing', details: error });
-    if (agentLogger.isDebugEnabled()) {
-      agentLogger.debug('Original text snippet', {
-        step: 'parsing',
-        details: text.slice(0, 500)
-      });
-    }
-    throw new Error('Failed to parse JSON response from LLM');
-  }
-}
+// extractJSON is now imported from json-extractor.ts
 
 function describePlan(plan: PlanResult): string {
-  const webSearchPart = plan.needsWebSearch
-    ? `will search the web using "${formatSearchQuery(plan.searchQuery)}"`
+  const webSearchPart = plan.dataSource === 'web-search'
+    ? `will search the web using "${formatSearchQuery(plan.searchQuery || null)}"`
+    : plan.dataSource === 'mock-database'
+    ? "will query the mock database"
     : "does not require a web search";
   const keyEntities =
     plan.keyEntities && plan.keyEntities.length > 0
@@ -318,7 +294,7 @@ function describePlan(plan: PlanResult): string {
 }
 
 function describeWebSearch(plan: PlanResult): string {
-  return `Searching the web for "${formatSearchQuery(plan.searchQuery)}" to gather real data for the ${plan.widgetType}.`;
+  return `Searching the web for "${formatSearchQuery(plan.searchQuery || null)}" to gather real data for the ${plan.widgetType}.`;
 }
 
 function describeMockDataPath(plan: PlanResult): string {

@@ -303,10 +303,12 @@ export interface WidgetResponse {
 
 export interface PlanResult {
   widgetType: WidgetType;
-  needsWebSearch: boolean;
-  searchQuery: string | null;
+  dataSource: 'mock-database' | 'web-search' | 'example-data';
+  searchQuery?: string | null;
+  queryIntent?: string | null;
   dataStructure: 'single-value' | 'list' | 'comparison' | 'timeseries' | 'grid';
   keyEntities: string[];
+  reasoning?: string;
 }
 
 export interface DataResult {

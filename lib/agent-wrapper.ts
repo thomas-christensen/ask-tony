@@ -11,6 +11,8 @@ import {
   validateDataSchema,
   validateWidgetData
 } from './widget-validator';
+import { queryMockDatabase } from './mock-database';
+import { extractJSONWithRepair } from './json-extractor';
 import type { Widget, WidgetResponse, PlanResult, DataResult } from './widget-schema';
 import { agentLogger } from './agent-logger';
 
@@ -48,7 +50,7 @@ export async function queryAgentStream(
   userMessage: string,
   onUpdate: (update: any) => void,
   model?: string,
-  dataMode?: 'web-search' | 'example-data'
+  dataMode?: 'web-search' | 'example-data' | 'mock-database'
 ): Promise<void> {
   // Use smart error recovery with fallback strategies
   await attemptWithFallbacks(userMessage, onUpdate, model, dataMode);
@@ -64,7 +66,7 @@ async function attemptWithFallbacks(
   userMessage: string,
   onUpdate: (update: any) => void,
   model?: string,
-  dataMode?: 'web-search' | 'example-data'
+  dataMode?: 'web-search' | 'example-data' | 'mock-database'
 ): Promise<void> {
   const modelToUse = model || process.env.CURSOR_MODEL || 'composer-1';
   
@@ -125,7 +127,7 @@ async function executeNormalPipeline(
   userMessage: string,
   onUpdate: (update: any) => void,
   model: string,
-  dataMode?: 'web-search' | 'example-data'
+  dataMode?: 'web-search' | 'example-data' | 'mock-database'
 ): Promise<void> {
   // PHASE 1: Planning
   onUpdate({ 
@@ -146,49 +148,71 @@ async function executeNormalPipeline(
   if (!planValidation.valid) {
     throw new Error(`Invalid plan: ${planValidation.errors.join(', ')}`);
   }
-  
-  // Override needsWebSearch based on user's data mode selection
+
+  // Override dataSource based on user's data mode selection (for backward compatibility)
   if (dataMode === 'web-search') {
-    planValidation.plan!.needsWebSearch = true;
+    planValidation.plan!.dataSource = 'web-search';
   } else if (dataMode === 'example-data') {
-    planValidation.plan!.needsWebSearch = false;
+    planValidation.plan!.dataSource = 'example-data';
+  } else if (dataMode === 'mock-database') {
+    planValidation.plan!.dataSource = 'mock-database';
   }
-  // If dataMode is undefined, use the plan's original decision
-  
+  // If dataMode is undefined, use the plan's original dataSource decision
+
   const finalPlan = planValidation.plan!;
-  
+
   // Stream plan to frontend for progressive skeleton
   onUpdate({ type: 'plan', plan: finalPlan });
-  
-  // PHASE 2: Data Fetching/Generation (if needed)
+
+  // PHASE 2: Data Fetching/Generation
   let dataResult: DataResult | null = null;
-  
-  if (finalPlan.needsWebSearch) {
-    agentLogger.info(describeWebSearch(finalPlan), {
-      step: 'data',
-      details: { searchQuery: finalPlan.searchQuery, widgetType: finalPlan.widgetType }
-    });
-    onUpdate({ 
-      type: 'progress', 
-      phase: 'searching', 
-      message: 'Searching the web',
-      progress: 40
-    });
-    
-    dataResult = await fetchData(finalPlan, userMessage, model);
-  } else {
-    agentLogger.info(describeMockDataPath(finalPlan), {
-      step: 'data',
-      details: { widgetType: finalPlan.widgetType, dataStructure: finalPlan.dataStructure }
-    });
-    onUpdate({ 
-      type: 'progress', 
-      phase: 'preparing', 
-      message: 'Generating',
-      progress: 40
-    });
-    
-    dataResult = await generateMockData(finalPlan, userMessage, model);
+
+  switch (finalPlan.dataSource) {
+    case 'mock-database':
+      agentLogger.info('Querying mock database', {
+        step: 'data',
+        details: { widgetType: finalPlan.widgetType, dataStructure: finalPlan.dataStructure, queryIntent: finalPlan.queryIntent }
+      });
+      onUpdate({
+        type: 'progress',
+        phase: 'querying',
+        message: 'Querying database',
+        progress: 40
+      });
+
+      dataResult = await queryMockDatabase(finalPlan, userMessage, model);
+      break;
+
+    case 'web-search':
+      agentLogger.info(describeWebSearch(finalPlan), {
+        step: 'data',
+        details: { searchQuery: finalPlan.searchQuery, widgetType: finalPlan.widgetType }
+      });
+      onUpdate({
+        type: 'progress',
+        phase: 'searching',
+        message: 'Searching the web',
+        progress: 40
+      });
+
+      dataResult = await fetchData(finalPlan, userMessage, model);
+      break;
+
+    case 'example-data':
+    default:
+      agentLogger.info(describeMockDataPath(finalPlan), {
+        step: 'data',
+        details: { widgetType: finalPlan.widgetType, dataStructure: finalPlan.dataStructure }
+      });
+      onUpdate({
+        type: 'progress',
+        phase: 'preparing',
+        message: 'Generating',
+        progress: 40
+      });
+
+      dataResult = await generateMockData(finalPlan, userMessage, model);
+      break;
   }
   
   agentLogger.info(describeDataResult(dataResult), {
@@ -354,13 +378,15 @@ function createFallbackWidget(query: string, phase: string, error?: string): Wid
  */
 function createFallbackPlan(query: string): PlanResult {
   agentLogger.info('Creating fallback plan', { step: 'fallback' });
-  
+
   return {
     widgetType: 'metric-card',
-    needsWebSearch: false,
+    dataSource: 'example-data',
     searchQuery: null,
+    queryIntent: null,
     dataStructure: 'single-value',
-    keyEntities: [query]
+    keyEntities: [query],
+    reasoning: 'Fallback plan due to planning failure'
   };
 }
 
@@ -536,26 +562,11 @@ Generate a widget JSON configuration that displays this data.${retryContext || '
 
 /**
  * Extract JSON from LLM response with aggressive error recovery
- * Handles malformed, truncated, and incomplete JSON
+ * Wrapper around extractJSONWithRepair that uses repairJSON strategy
  */
 function extractJSON(text: string): any {
   try {
-    // Step 1: Remove markdown code blocks if present
-    let cleanedText = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
-    
-    // Step 2: Find JSON object (handles nested objects)
-    const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON object found in response');
-    }
-    
-    let jsonStr = jsonMatch[0];
-    
-    // Step 3: Apply aggressive JSON repair strategies
-    jsonStr = repairJSON(jsonStr);
-    
-    // Step 4: Try to parse
-    return JSON.parse(jsonStr);
+    return extractJSONWithRepair(text, repairJSON);
   } catch (error) {
     agentLogger.error('JSON extraction failed', { step: 'parsing', details: error });
     if (agentLogger.isDebugEnabled()) {
@@ -568,8 +579,7 @@ function extractJSON(text: string): any {
         details: text.slice(-500)
       });
     }
-    // Throw with context for retry logic
-    throw new Error(`Failed to parse JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw error;
   }
 }
 
@@ -629,8 +639,10 @@ function repairJSON(jsonStr: string): string {
 }
 
 function describePlan(plan: PlanResult): string {
-  const webSearchPart = plan.needsWebSearch
-    ? `will search the web using "${formatSearchQuery(plan.searchQuery)}"`
+  const webSearchPart = plan.dataSource === 'web-search'
+    ? `will search the web using "${formatSearchQuery(plan.searchQuery || null)}"`
+    : plan.dataSource === 'mock-database'
+    ? "will query the mock database"
     : "does not require a web search";
   const keyEntities =
     plan.keyEntities && plan.keyEntities.length > 0
@@ -640,7 +652,7 @@ function describePlan(plan: PlanResult): string {
 }
 
 function describeWebSearch(plan: PlanResult): string {
-  return `Searching the web for "${formatSearchQuery(plan.searchQuery)}" to gather real data for the ${plan.widgetType}.`;
+  return `Searching the web for "${formatSearchQuery(plan.searchQuery || null)}" to gather real data for the ${plan.widgetType}.`;
 }
 
 function describeMockDataPath(plan: PlanResult): string {
@@ -705,7 +717,7 @@ function truncate(value: string, length: number): string {
 export async function queryAgent(
   userMessage: string,
   model?: string,
-  dataMode?: 'web-search' | 'example-data'
+  dataMode?: 'web-search' | 'example-data' | 'mock-database'
 ): Promise<WidgetResponse> {
   return new Promise((resolve) => {
     queryAgentStream(userMessage, (update) => {

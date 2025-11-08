@@ -5,24 +5,38 @@ import { SearchIcon, SparklesIcon } from './icons';
 export type DataMode = 'web-search' | 'example-data';
 
 interface DataModeToggleProps {
-  dataMode: DataMode;
-  onDataModeChange: (mode: DataMode) => void;
+  dataMode: DataMode | undefined;
+  onDataModeChange: (mode: DataMode | undefined) => void;
   disabled?: boolean;
 }
 
 export function DataModeToggle({ dataMode, onDataModeChange, disabled }: DataModeToggleProps) {
   const handleClick = () => {
-    const newMode: DataMode = dataMode === 'web-search' ? 'example-data' : 'web-search';
+    // Cycle through: undefined (auto) -> web-search -> example-data -> undefined
+    let newMode: DataMode | undefined;
+    if (dataMode === undefined) {
+      newMode = 'web-search';
+    } else if (dataMode === 'web-search') {
+      newMode = 'example-data';
+    } else {
+      newMode = undefined;
+    }
+
     onDataModeChange(newMode);
-    
+
     // Update URL parameter
     const url = new URL(window.location.href);
-    url.searchParams.set('dataMode', newMode);
+    if (newMode === undefined) {
+      url.searchParams.delete('dataMode');
+    } else {
+      url.searchParams.set('dataMode', newMode);
+    }
     window.history.pushState({}, '', url);
   };
 
   const isWebSearch = dataMode === 'web-search';
-  const label = isWebSearch ? 'web' : 'mock';
+  const isAuto = dataMode === undefined;
+  const label = isAuto ? 'auto' : (isWebSearch ? 'web' : 'mock');
   const Icon = isWebSearch ? SearchIcon : SparklesIcon;
 
   return (

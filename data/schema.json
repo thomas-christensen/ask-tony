@@ -1,0 +1,165 @@
+{
+  "database_name": "SaaS Analytics Database",
+  "description": "Mock database containing typical SaaS business metrics including users, subscriptions, and feature usage data",
+  "tables": {
+    "users": {
+      "description": "User accounts in the system",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "description": "Unique user identifier"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "name": {
+          "type": "string",
+          "description": "User full name"
+        },
+        "created_at": {
+          "type": "date",
+          "description": "Date when user signed up (YYYY-MM-DD)"
+        },
+        "plan_type": {
+          "type": "string",
+          "description": "Current plan type",
+          "values": ["free", "pro", "enterprise"]
+        },
+        "status": {
+          "type": "string",
+          "description": "User account status",
+          "values": ["active", "churned"]
+        },
+        "churned_at": {
+          "type": "date",
+          "description": "Date when user churned (YYYY-MM-DD), null if active",
+          "nullable": true
+        }
+      },
+      "example_queries": [
+        "How many users signed up this month?",
+        "How many active users do we have?",
+        "What's our user growth rate?",
+        "How many users are on the pro plan?"
+      ]
+    },
+    "subscriptions": {
+      "description": "User subscription records tracking plan types and revenue",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "description": "Unique subscription identifier"
+        },
+        "user_id": {
+          "type": "integer",
+          "description": "Foreign key to users table"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Subscription plan name",
+          "values": ["free", "pro", "enterprise"]
+        },
+        "mrr": {
+          "type": "number",
+          "description": "Monthly Recurring Revenue in USD"
+        },
+        "start_date": {
+          "type": "date",
+          "description": "Subscription start date (YYYY-MM-DD)"
+        },
+        "end_date": {
+          "type": "date",
+          "description": "Subscription end date (YYYY-MM-DD), null if active",
+          "nullable": true
+        },
+        "status": {
+          "type": "string",
+          "description": "Subscription status",
+          "values": ["active", "cancelled"]
+        }
+      },
+      "example_queries": [
+        "What's our total MRR?",
+        "What's our MRR growth over time?",
+        "How much revenue do we get from enterprise customers?",
+        "What's the average revenue per user?"
+      ]
+    },
+    "mrr_snapshots": {
+      "description": "Monthly MRR snapshots showing revenue growth over time",
+      "columns": {
+        "month": {
+          "type": "string",
+          "description": "Month in YYYY-MM format"
+        },
+        "total_mrr": {
+          "type": "number",
+          "description": "Total Monthly Recurring Revenue at end of month in USD"
+        },
+        "active_subscriptions": {
+          "type": "integer",
+          "description": "Number of active paying subscriptions"
+        },
+        "new_mrr": {
+          "type": "number",
+          "description": "New MRR added this month in USD"
+        },
+        "churned_mrr": {
+          "type": "number",
+          "description": "MRR lost to churn this month in USD"
+        }
+      },
+      "example_queries": [
+        "Show MRR over time",
+        "What's our MRR growth trend?",
+        "Show monthly revenue chart",
+        "How much MRR did we add last month?"
+      ]
+    },
+    "feature_usage": {
+      "description": "Daily feature usage tracking per user",
+      "columns": {
+        "id": {
+          "type": "integer",
+          "description": "Unique usage record identifier"
+        },
+        "user_id": {
+          "type": "integer",
+          "description": "Foreign key to users table"
+        },
+        "feature_name": {
+          "type": "string",
+          "description": "Name of the feature being tracked",
+          "values": ["api_calls", "dashboard_views", "exports", "reports"]
+        },
+        "usage_count": {
+          "type": "integer",
+          "description": "Number of times feature was used"
+        },
+        "date": {
+          "type": "date",
+          "description": "Date of usage (YYYY-MM-DD)"
+        }
+      },
+      "example_queries": [
+        "Which feature is most used?",
+        "Show API usage over time",
+        "What's the average feature usage per user?",
+        "Which users are power users?"
+      ]
+    }
+  },
+  "relationships": {
+    "users_to_subscriptions": "One user can have multiple subscriptions over time",
+    "users_to_feature_usage": "One user can have many feature usage records"
+  },
+  "common_metrics": {
+    "MRR": "Sum of mrr from active subscriptions",
+    "Active Users": "Count of users with status='active'",
+    "Churn Rate": "Percentage of users who churned",
+    "ARPU": "Average Revenue Per User (total MRR / active paying users)",
+    "User Growth": "New users over time periods",
+    "Feature Adoption": "Usage counts by feature type"
+  }
+}

@@ -179,9 +179,22 @@ function renderChart(widget: Widget): ReactNode {
 }
 
 /**
- * Renders the complete widget response (main entry point)
- * Wraps all widgets in a single animated card container
+ * Helper to get data source badge info
  */
+function getDataSourceBadge(source: string | null | undefined, plan?: any): { label: string; emoji: string; color: string } | null {
+  const dataSource = plan?.dataSource || source;
+
+  if (dataSource === 'mock-database' || source === 'mock-database') {
+    return { label: 'Database', emoji: '📊', color: 'text-blue-600 dark:text-blue-400' };
+  } else if (dataSource === 'web-search') {
+    return { label: 'Web Search', emoji: '🌐', color: 'text-green-600 dark:text-green-400' };
+  } else if (dataSource === 'example-data') {
+    return { label: 'Example Data', emoji: '📝', color: 'text-purple-600 dark:text-purple-400' };
+  }
+
+  return null;
+}
+
 export function renderWidgetResponse(
   response: WidgetResponse,
   plan?: any,
@@ -199,10 +212,28 @@ export function renderWidgetResponse(
 
   // Render widget wrapped in card
   if (response.widget) {
+    const badge = getDataSourceBadge(response.source, plan);
+    const queryIntent = plan?.queryIntent;
+    const showMetadata = badge || queryIntent;
+
     return (
       <div className="md:max-w-[500px] max-w-[calc(100dvw-80px)] w-full">
         <Card className="overflow-hidden">
           {renderWidgetWithLiveSupport(response.widget, plan, query, dataMode)}
+          {showMetadata && (
+            <div className="px-4 py-2 border-t border-border/40 bg-muted/30">
+              {badge && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="font-medium">{badge.label}</span>
+                  {queryIntent && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {queryIntent}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </Card>
       </div>
     );

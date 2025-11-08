@@ -22,7 +22,11 @@ const BaseWidgetSchema = z.object({
     'form',
     'gallery',
     'profile',
-    'container'
+    'container',
+    'quote',
+    'recipe',
+    'weather',
+    'stock-ticker'
   ]),
   config: z.record(z.any()).optional(),
   data: z.any().optional(),
@@ -45,12 +49,18 @@ export const PlanResultSchema = z.object({
     'form',
     'gallery',
     'profile',
-    'container'
+    'container',
+    'quote',
+    'recipe',
+    'weather',
+    'stock-ticker'
   ]),
-  needsWebSearch: z.boolean(),
-  searchQuery: z.string().nullable(),
+  dataSource: z.enum(['mock-database', 'web-search', 'example-data']),
+  searchQuery: z.string().nullable().optional(),
+  queryIntent: z.string().nullable().optional(),
   dataStructure: z.enum(['single-value', 'list', 'comparison', 'timeseries', 'grid']),
-  keyEntities: z.array(z.string())
+  keyEntities: z.array(z.string()),
+  reasoning: z.string().optional()
 });
 
 export const DataResultSchema = z.object({
